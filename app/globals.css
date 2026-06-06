@@ -1,0 +1,47 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  color: #172033;
+  background: #f8fafc;
+}
+
+.bill-html {
+  background: #fff;
+  overflow-x: auto;
+}
+
+.bill-html img,
+.bill-html table {
+  max-width: 100%;
+}
+
+@media print {
+  body {
+    background: #fff !important;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  main,
+  .print-area,
+  .bill-html {
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    max-width: none !important;
+    overflow: visible !important;
+  }
+
+  main > *:not(.print-area) {
+    display: none !important;
+  }
+}
