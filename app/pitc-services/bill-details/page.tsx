@@ -10,6 +10,11 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 };
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+export const maxDuration = 30;
+
 export default async function BillDetailsPage({ searchParams }: { searchParams: Promise<{ company?: string; refno?: string }> }) {
   const params = await searchParams;
   const reference = (params.refno || "").replace(/\D/g, "");
@@ -23,7 +28,11 @@ export default async function BillDetailsPage({ searchParams }: { searchParams: 
     try {
       billHtml = await fetchPitcBill(bill.url, reference);
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : "The official bill could not be loaded right now.";
+      const message = caught instanceof Error ? caught.message : "The official bill could not be loaded right now.";
+      error =
+        message === "fetch failed"
+          ? "The official PITC bill server blocked or timed out the hosting request. Please try again in a few seconds."
+          : message;
     }
   }
 

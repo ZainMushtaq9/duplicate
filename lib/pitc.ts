@@ -1,3 +1,14 @@
+import { lookup } from "node:dns";
+import { request } from "node:https";
+import { URL } from "node:url";
+
+type OfficialResponse = {
+  ok: boolean;
+  status: number;
+  headers: Record<string, string | string[] | undefined>;
+  text: string;
+};
+
 function parseInputs(html: string) {
   const fields = new URLSearchParams();
   const inputPattern = /<input[^>]+>/gi;
@@ -29,15 +40,56 @@ function rewriteBillHtml(html: string) {
     .replaceAll("src='/", "src='https://bill.pitc.com.pk/");
 }
 
-function extractCookies(headers: Headers) {
-  const withGetter = headers as Headers & { getSetCookie?: () => string[] };
-  const setCookies = typeof withGetter.getSetCookie === "function" ? withGetter.getSetCookie() : [];
-  const fallback = headers.get("set-cookie");
-  const rawCookies = setCookies.length ? setCookies : fallback ? fallback.split(/,(?=\s*[^;,\s]+=)/) : [];
+function extractCookies(headers: OfficialResponse["headers"]) {
+  const setCookie = headers["set-cookie"];
+  const rawCookies = Array.isArray(setCookie) ? setCookie : setCookie ? setCookie.split(/,(?=\s*[^;,\s]+=)/) : [];
   return rawCookies
     .map((cookie) => cookie.split(";")[0].trim())
     .filter(Boolean)
     .join("; ");
+}
+
+function officialRequest(url: string, options: { method?: "GET" | "POST"; headers?: Record<string, string>; body?: string } = {}) {
+  return new Promise<OfficialResponse>((resolve, reject) => {
+    const parsed = new URL(url);
+    const body = options.body || "";
+    const req = request(
+      {
+        protocol: parsed.protocol,
+        hostname: parsed.hostname,
+        port: parsed.port || 443,
+        path: `${parsed.pathname}${parsed.search}`,
+        method: options.method || "GET",
+        headers: {
+          ...options.headers,
+          ...(body ? { "content-length": Buffer.byteLength(body).toString() } : {}),
+        },
+        lookup: (hostname, lookupOptions, callback) => lookup(hostname, { ...lookupOptions, family: 4 }, callback),
+        timeout: 25000,
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+        response.on("end", () => {
+          const status = response.statusCode || 0;
+          resolve({
+            ok: status >= 200 && status < 300,
+            status,
+            headers: response.headers,
+            text: Buffer.concat(chunks).toString("utf8"),
+          });
+        });
+      },
+    );
+    req.on("timeout", () => req.destroy(new Error("The official PITC bill system timed out.")));
+    req.on("error", reject);
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+function resolveOfficialUrl(baseUrl: string, location: string) {
+  return new URL(location, baseUrl).toString();
 }
 
 export async function fetchPitcBill(billUrl: string, reference: string) {
@@ -46,24 +98,28 @@ export async function fetchPitcBill(billUrl: string, reference: string) {
     accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     referer: billUrl,
   };
-  const formResponse = await fetch(billUrl, { headers, cache: "no-store" });
+  const formResponse = await officialRequest(billUrl, { headers });
   if (!formResponse.ok) throw new Error("Could not load the official bill form.");
-  const formHtml = await formResponse.text();
+  const formHtml = formResponse.text;
   const cookie = extractCookies(formResponse.headers);
   const body = parseInputs(formHtml);
   body.set("rbSearchByList", "refno");
   body.set("searchTextBox", reference);
   body.set("ruCodeTextBox", "");
   body.set("btnSearch", "Search");
-  const billResponse = await fetch(billUrl, {
+  let billResponse = await officialRequest(billUrl, {
     method: "POST",
     headers: { ...headers, cookie, "content-type": "application/x-www-form-urlencoded" },
-    body,
-    cache: "no-store",
-    redirect: "follow",
+    body: body.toString(),
   });
+  const redirectLocation = billResponse.headers.location;
+  if ([301, 302, 303, 307, 308].includes(billResponse.status) && typeof redirectLocation === "string") {
+    billResponse = await officialRequest(resolveOfficialUrl(billUrl, redirectLocation), {
+      headers: { ...headers, cookie, referer: billUrl },
+    });
+  }
   if (!billResponse.ok) throw new Error("The official bill system did not return a successful response.");
-  const billHtml = await billResponse.text();
+  const billHtml = billResponse.text;
   if (billHtml.includes("Search Your Electricity Bill") && !billHtml.includes("BILL MONTH")) {
     throw new Error("No printable bill was returned for this reference number.");
   }
